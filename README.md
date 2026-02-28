@@ -1,0 +1,1 @@
+> **Note:** I will release the full project details and related code after the paper is accepted. Currently, I have only released the newly discovered active IPv6 addresses compared to the publicly available IPv6Hitlist dataset.
