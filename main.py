@@ -710,18 +710,7 @@ def _process_prefix_chunk(args: Tuple) -> List[Tuple[str, int, str]]:
 # ============================================================
 
 class HybridGenerator:
-    """
-    Hybrid generator - CEX + BGP exploration
-
-    V27 Fixed:
-      Bug1: _generate_cex_with_priority() no longer halves n with n//2;
-            uses the passed-in n directly as the generation target.
-            generate() is responsible for passing the correct count.
-      Bug2: When interp is exhausted in the interleave loop, remaining
-            extrap entries are directly extended and the loop breaks.
-      Bug4: _generate_exploration() uses a string set for deduplication
-            to avoid hash collisions.
-    """
+    
 
     def __init__(self, config: Config):
         self.config = config
@@ -847,9 +836,7 @@ class HybridGenerator:
 
         return final_candidates[:n]
 
-    # ------------------------------------------------------------------
-    # V27 Fixed: _generate_cex_with_priority
-    # ------------------------------------------------------------------
+    
 
     # Fraction of the final CEX candidates that come from extrapolation
     _EXTRAP_RATIO: float = 0.05
@@ -1224,15 +1211,7 @@ class PatternMatcher:
             self._prefix_steps[p64] = step
 
     def filter_matching(self, addrs: List[str]) -> Tuple[List[str], List[str]]:
-        """
-        Filter addresses that match patterns (parallel version).
-
-        Opt2+Opt4: chunk_size raised to max(50000, ...) and split into
-                   n_workers*16 chunks, balancing serialization size and
-                   scheduling uniformity while reducing IPC overhead.
-        Opt3:      Parallel trigger threshold lowered from 10000 to 1000
-                   to use multiple cores more aggressively.
-        """
+        
         if not addrs:
             return [], []
 
@@ -1327,17 +1306,7 @@ class PatternMatcher:
         return matched, unmatched
 
     def add_addresses(self, addrs: List[str]):
-        """
-        Add addresses into the pattern database.
-
-        Opt5: bulk merge instead of repeated bisect.insort.
-              The original implementation called bisect.insort once per address,
-              which is O(n) list shifting under the hood. At 2.62M addresses the
-              total complexity degrades to O(n^2), the root cause of [6/6] being
-              extremely slow. The new implementation groups new IIDs by prefix
-              (O(n)), sorts them, and does a linear merge with the old list
-              (O(k log k + m)). Total complexity drops to O(n log n).
-        """
+        
         # 1. Group new IIDs by prefix (only for known prefixes)
         prefix_new_iids: Dict[str, List[int]] = defaultdict(list)
 
@@ -1390,19 +1359,7 @@ class PatternMatcher:
 
 
 def _filter_chunk_fast(args: Tuple) -> Tuple[List[str], List[str]]:
-    """
-    Multiprocessing worker function.
-
-    Bug3 + Opt1 + Opt6:
-      Opt6: Addresses already in 32-char continuous hex format (len==32, no colons)
-            skip parsing entirely via direct string slicing, eliminating ~90% of
-            Python object creation overhead.
-      Opt1: For colon-containing addresses, try the fast path first: standard
-            exploded format (length 39, exactly 7 colons) can have colons stripped
-            directly without calling the stdlib, covering the vast majority of cases.
-      Bug3: Fall back to ipaddress.IPv6Address only when the format does not match,
-            correctly handling compressed forms such as ::1 and fe80::.
-    """
+    
     addrs, prefix_iids_arrays, prefix_steps, tolerance = args
 
     matched = []
@@ -1829,7 +1786,7 @@ class CEXController:
         total_start_time = time.time()
 
         print("=" * 70)
-        print("CEX Auto V27 Fixed - Extrapolation Quota (5% extrap / 95% interp)")
+        print("CEX Auto  - Extrapolation Quota (5% extrap / 95% interp)")
         print("=" * 70)
         print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Seeds: {seeds_file}")
@@ -1980,7 +1937,7 @@ class CEXController:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CEX Auto V27 Fixed - Extrapolation Quota (5% extrap / 95% interp)",
+        description="CEX Auto  - Extrapolation Quota (5% extrap / 95% interp)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
