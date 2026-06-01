@@ -1,5 +1,13 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+main.py - CEX-based IPv6 active address scanner with optional BGP exploration
 
+Dependencies:
+    - masscan
+    - Python 3.8+
+    - numpy (optional, for faster exploration sampling)
+"""
 from __future__ import annotations
 import argparse
 import ipaddress
@@ -15,7 +23,6 @@ import pickle
 import resource
 import bisect
 
-# Optional dependencies
 try:
     import psutil
     HAS_PSUTIL = True
@@ -42,7 +49,6 @@ from dataclasses import dataclass, field
 # ============================================================
 
 class Timer:
-    """Timer utility"""
     def __init__(self, name: str = ""):
         self.name = name
         self.start_time = None
@@ -60,7 +66,6 @@ class Timer:
 
 
 class ResourceStats:
-    """Resource statistics"""
     def __init__(self):
         self.start_time = time.time()
         self.phase_times: Dict[str, float] = {}
@@ -109,39 +114,36 @@ resource_stats = ResourceStats()
 
 
 # ============================================================
-# Module 1: Configuration Management
+# Module 1: Configuration
 # ============================================================
 
 class Config:
-    """Global configuration"""
     def __init__(self):
-        # Directory configuration
         self.state_dir = "./cex_state"
         self.output_dir = "./cex_output"
         self.cache_dir = "./.alias_cache"
 
-        # Parallel configuration
         self.num_workers = max(1, cpu_count() - 1)
 
-        # CEX configuration
         self.max_steps = 30
         self.tolerance = 0.5
 
-        # Alias filter configuration
         self.alias_file = "./aliased-prefixes.txt"
         self.enable_alias_filter = True
 
-        # Exploration configuration
-        self.explore_ratio = 0.0  # Default 0, pure CEX mode
+        self.explore_ratio = 0.0
         self.bgp_file = None
 
-        # Scan configuration
+        # ----------------------------------------------------------------
+        # REQUIRED: fill in your scanner host settings before running
+        # ----------------------------------------------------------------
         self.scan_port = "80,443"
         self.scan_rate = 100000
         self.ping_rate = 100000
-        self.interface = ""
-        self.source_ip = ""
-        self.router_mac = ""
+        self.interface = ""               # network interface, e.g. "eth0"
+        self.source_ip = ""        # your scanner's IPv6 source address
+        self.router_mac = "" # IPv6 gateway/router MAC address
+        # ----------------------------------------------------------------
 
     def setup_dirs(self):
         os.makedirs(self.state_dir, exist_ok=True)
@@ -154,8 +156,6 @@ class Config:
 # ============================================================
 
 class StateManager:
-    """State persistence manager (optimized)"""
-
     def __init__(self, config: Config):
         self.config = config
         self.seeds_file = os.path.join(config.state_dir, "seeds.txt")
@@ -236,12 +236,10 @@ class StateManager:
 
 
 # ============================================================
-# Module 3: BGP Prefix Database (from V18)
+# Module 3: BGP Prefix Database
 # ============================================================
 
 class BGPPrefixDatabase:
-    """BGP prefix database"""
-
     def __init__(self):
         self.prefixes: Dict[str, Dict] = {}
         self.as_graph: Dict[str, List[int]] = {}
@@ -249,7 +247,6 @@ class BGPPrefixDatabase:
         self.ip_ranges: List[Dict] = []
 
     def load_from_file(self, filepath: str) -> bool:
-        """Load BGP data from file"""
         if not filepath or not os.path.exists(filepath):
             print(f"  BGP data file not found: {filepath}")
             return False
@@ -285,7 +282,6 @@ class BGPPrefixDatabase:
             return False
 
     def _build_ip_index(self):
-        """Build IP range index for fast lookup"""
         self.ip_ranges = []
 
         for prefix, info in self.prefixes.items():
@@ -308,7 +304,6 @@ class BGPPrefixDatabase:
         self.ip_ranges.sort(key=lambda x: x['start'])
 
     def _build_as_graph(self):
-        """Build AS adjacency graph from AS paths"""
         as_neighbors = defaultdict(set)
 
         for prefix, info in self.prefixes.items():
@@ -323,7 +318,6 @@ class BGPPrefixDatabase:
         self.as_graph = {k: list(v) for k, v in as_neighbors.items()}
 
     def get_as_for_address(self, addr: str) -> Optional[int]:
-        """Lookup AS number for an IPv6 address (binary search)"""
         try:
             addr_int = int(ipaddress.IPv6Address(addr))
         except:
@@ -348,15 +342,12 @@ class BGPPrefixDatabase:
         return None
 
     def get_as_prefixes(self, as_num: int) -> List[str]:
-        """Get all prefixes belonging to an AS"""
         return self.as_to_prefixes.get(as_num, [])
 
     def get_as_neighbors(self, as_num: int) -> List[int]:
-        """Get neighboring ASes of an AS"""
         return self.as_graph.get(str(as_num), [])
 
     def get_all_prefixes(self) -> List[str]:
-        """Get all prefixes"""
         return list(self.prefixes.keys())
 
 
@@ -365,20 +356,19 @@ class BGPPrefixDatabase:
 # ============================================================
 
 def ipv6_to_cont(addr: str) -> str:
-    """Convert IPv6 address to 32-char continuous hex format"""
+    """Convert IPv6 address to 32-char continuous hex string."""
     try:
         return ipaddress.IPv6Address(addr).exploded.replace(":", "")
     except:
         return addr
 
 def cont_to_ipv6(cont: str) -> str:
-    """Convert 32-char continuous hex format to IPv6 address"""
+    """Convert 32-char continuous hex string to colon-separated IPv6."""
     if len(cont) == 32 and ':' not in cont:
         return ":".join(cont[i:i+4] for i in range(0, 32, 4))
     return cont
 
 def read_addrs(filename: str) -> List[str]:
-    """Read address file"""
     if not os.path.exists(filename):
         return []
     out = []
@@ -399,7 +389,6 @@ def read_addrs(filename: str) -> List[str]:
 
 @dataclass
 class AliasFilterStats:
-    """Alias filter statistics"""
     total: int = 0
     aliased: int = 0
     remaining: int = 0
@@ -410,8 +399,6 @@ class AliasFilterStats:
 
 
 class AliasFilter:
-    """Alias address filter"""
-
     _MASK_CACHE: Dict[int, int] = {}
 
     def __init__(self, config: Config):
@@ -622,7 +609,6 @@ class AliasFilter:
 
     def filter_file(self, input_file: str, output_file: str,
                     verbose: bool = False) -> AliasFilterStats:
-        """Filter aliased addresses from file"""
         stats = AliasFilterStats()
 
         with open(input_file, 'r') as fin, open(output_file, 'w') as fout:
@@ -649,7 +635,7 @@ class AliasFilter:
 # ============================================================
 
 def _process_prefix_chunk(args: Tuple) -> List[Tuple[str, int, str]]:
-    """Process a batch of prefixes for extrapolation (multiprocessing worker)"""
+    """Multiprocessing worker: extrapolate candidates from a prefix chunk."""
     prefix_data_chunk, existing_set, max_steps = args
 
     results = []
@@ -706,11 +692,14 @@ def _process_prefix_chunk(args: Tuple) -> List[Tuple[str, int, str]]:
 
 
 # ============================================================
-# Module 7: Hybrid Generator (CEX + Exploration) - V27 Fixed
+# Module 7: Hybrid Generator (CEX + Exploration)
 # ============================================================
 
 class HybridGenerator:
-    
+    """Hybrid candidate generator combining CEX extrapolation and BGP-guided exploration."""
+
+    # Fraction of final CEX candidates drawn from extrapolation (forward + backward).
+    _EXTRAP_RATIO: float = 0.05
 
     def __init__(self, config: Config):
         self.config = config
@@ -719,13 +708,11 @@ class HybridGenerator:
         self.all_active_set: Set[str] = set()
         self.seed_as_set: Set[int] = set()
 
-        # BGP database (optional)
         self.bgp_db: Optional[BGPPrefixDatabase] = None
         if config.explore_ratio > 0:
             self._load_bgp_data()
 
     def _load_bgp_data(self):
-        """Load BGP data"""
         if not self.config.bgp_file:
             print("    Warning: No BGP data file provided, exploration layer will be disabled")
             return
@@ -738,7 +725,6 @@ class HybridGenerator:
             print(f"    BGP data loaded, exploration layer enabled")
 
     def fit(self, seeds: List[str]):
-        """Train CEX"""
         print(f"  Training hybrid generator: {len(seeds):,} seeds...")
 
         prefix_iids = defaultdict(list)
@@ -754,7 +740,6 @@ class HybridGenerator:
             addr_ipv6 = cont_to_ipv6(cont)
             self.all_active_set.add(addr_ipv6)
 
-            # Query AS (if exploration is enabled)
             if self.bgp_db:
                 as_num = self.bgp_db.get_as_for_address(addr_ipv6)
                 if as_num is not None:
@@ -777,7 +762,6 @@ class HybridGenerator:
 
         self.prefixes = list(self.prefix_data.keys())
 
-        # Build standard IPv6 prefix list (for exploration layer filtering)
         self.prefixes_ipv6 = []
         for p64_hex in self.prefixes:
             try:
@@ -793,15 +777,8 @@ class HybridGenerator:
         print(f"    Prefixes: {len(self.prefixes):,}, IIDs: {total_iids:,}")
 
     def generate(self, n: int, existing: Set[str]) -> List[str]:
-        """
-        Generate hybrid candidates.
-
-        Bug1 Fix: pass n_cex directly to _generate_cex_with_priority
-        instead of n_cex * 2. The internal method no longer halves with //2.
-        """
         print(f"  Hybrid generation (workers={self.config.num_workers})...")
 
-        # Calculate quotas
         if self.config.explore_ratio <= 0 or self.bgp_db is None:
             n_cex = n
             n_explore = 0
@@ -814,12 +791,10 @@ class HybridGenerator:
 
         cex_candidates = self._generate_cex_with_priority(n_cex, existing)
 
-        # Generate exploration candidates
         explore_candidates = []
         if n_explore > 0 and self.bgp_db is not None:
             explore_candidates = self._generate_exploration(n_explore, existing)
 
-        # Merge, deduplicate, and truncate to n
         final_candidates = []
         seen = set()
 
@@ -836,22 +811,12 @@ class HybridGenerator:
 
         return final_candidates[:n]
 
-    
-
-    # Fraction of the final CEX candidates that come from extrapolation
-    _EXTRAP_RATIO: float = 0.05
-
     def _generate_cex_with_priority(self, n: int, existing: Set[str]) -> List[str]:
         """
-        Generate CEX candidates with proportional quota allocation.
-
-        Allocation policy:
-          - Ideal ratio: interp=(1-_EXTRAP_RATIO), extrap=_EXTRAP_RATIO
-          - If either pool has insufficient candidates, re-allocate proportionally
-            based on actual availability to maximize total output without wasting
-            candidates from either side.
+        Generate CEX candidates.
+        Approximately 95% from interpolation and 5% from extrapolation,
+        interleaved at a 1-in-20 ratio.
         """
-        # 1. Parallel generation of raw CEX candidates
         prefix_items = list(self.prefix_data.items())
         num_chunks = self.config.num_workers * 2
         chunk_size = max(1, len(prefix_items) // num_chunks)
@@ -871,7 +836,6 @@ class HybridGenerator:
             for chunk in chunks:
                 all_results.extend(_process_prefix_chunk(chunk))
 
-        # 2. Global deduplication
         seen: Set[str] = set()
         unique: List[Tuple[str, int, str]] = []
         for item in all_results:
@@ -880,7 +844,6 @@ class HybridGenerator:
                 seen.add(addr)
                 unique.append(item)
 
-        # 3. Split into interpolation pool and extrapolation pool
         interp_pool: List[Tuple[str, int, str]] = [
             x for x in unique if x[2] == 'interpolate'
         ]
@@ -891,26 +854,13 @@ class HybridGenerator:
         random.shuffle(interp_pool)
         extrap_pool.sort(key=lambda x: (x[1], random.random()))
 
-        # 4. Proportional allocation based on actual pool sizes to maximize total output
-        avail_interp = len(interp_pool)
-        avail_extrap = len(extrap_pool)
-        avail_total  = avail_interp + avail_extrap
+        n_extrap = max(1, int(n * self._EXTRAP_RATIO))
+        n_interp = n - n_extrap
 
-        if avail_total == 0:
-            return []
+        selected_interp = interp_pool[:n_interp]
+        selected_extrap = extrap_pool[:n_extrap]
 
-        actual_total  = min(n, avail_total)
-        actual_interp = min(avail_interp, round(actual_total * avail_interp / avail_total))
-        actual_extrap = actual_total - actual_interp
-
-        selected_interp = interp_pool[:actual_interp]
-        selected_extrap = extrap_pool[:actual_extrap]
-
-        # 5. Interleave
-        # Interleave interval is computed dynamically from the actual extrap ratio
-        actual_extrap_ratio = actual_extrap / actual_total if actual_total > 0 else self._EXTRAP_RATIO
-        interleave_every = max(1, int(round(1.0 / actual_extrap_ratio))) if actual_extrap_ratio > 0 else actual_total
-
+        interleave_every = max(1, int(round(1.0 / self._EXTRAP_RATIO)))
         final_items: List[Tuple[str, int, str]] = []
         ei = 0
         ii = 0
@@ -923,45 +873,34 @@ class HybridGenerator:
                 final_items.append(selected_interp[ii])
                 ii += 1
             elif ei < len(selected_extrap):
-                # interp exhausted: append all remaining extrap directly
                 final_items.extend(selected_extrap[ei:])
                 break
             slot += 1
 
-        # 6. Detailed statistics
         cnt_interp   = sum(1 for x in final_items if x[2] == 'interpolate')
         cnt_forward  = sum(1 for x in final_items if x[2] == 'forward')
         cnt_backward = sum(1 for x in final_items if x[2] == 'backward')
         cnt_extrap   = cnt_forward + cnt_backward
         total        = len(final_items)
         extrap_pct   = cnt_extrap / total * 100 if total > 0 else 0.0
-        ideal_interp_pct = (1.0 - self._EXTRAP_RATIO) * 100
-        ideal_extrap_pct = self._EXTRAP_RATIO * 100
 
         print(
             f"    CEX generated: raw={len(unique):,} -> interleaved={total:,} "
             f"(target={n:,}, interleave=1/{interleave_every}) "
-            f"| interp={cnt_interp:,} ({100.0 - extrap_pct:.1f}% / ideal {ideal_interp_pct:.0f}%) "
-            f"| extrap={cnt_extrap:,} ({extrap_pct:.1f}% / ideal {ideal_extrap_pct:.0f}%)"
+            f"| interp={cnt_interp:,} ({100.0 - extrap_pct:.1f}%) "
+            f"| extrap={cnt_extrap:,} ({extrap_pct:.1f}%)"
             f" [fwd={cnt_forward:,} bwd={cnt_backward:,}]"
         )
 
-        # 7. Return addresses only
         return [item[0] for item in final_items]
 
     def _generate_exploration(self, n: int, existing: Set[str]) -> List[str]:
-        """
-        Exploration layer generation (BGP-guided).
-
-        Bug4 Fix: use a string address set (seen_addrs) instead of a hash set
-        for deduplication.
-        """
+        """BGP-guided exploration: AS-neighbor (50%), /48-level (40%), /64-neighbor (10%)."""
         if self.bgp_db is None or len(self.bgp_db.prefixes) == 0:
             return []
 
         generated = []
 
-        # Extract interface ID pool (up to 10000)
         interface_ids = []
         for addr in list(self.all_active_set)[:5000]:
             try:
@@ -979,15 +918,13 @@ class HybridGenerator:
         else:
             interface_id_pool = interface_ids
 
-        # Quota allocation: 2a(50%), 2b(40%), 2c(10%)
         quota_2a = int(n * 0.50)
         quota_2b = int(n * 0.40)
         quota_2c = int(n * 0.10)
 
-        # Bug4 Fix: use string set instead of hash set for deduplication
         seen_addrs: Set[str] = set(existing)
 
-        # Exploration 2a: BGP adjacent AS exploration
+        # 2a: BGP adjacent AS exploration
         adjacent_as = set()
         for as_num in list(self.seed_as_set)[:200]:
             neighbors = self.bgp_db.get_as_neighbors(as_num)
@@ -1046,7 +983,7 @@ class HybridGenerator:
 
         generated.extend(generated_2a)
 
-        # Exploration 2b: /48-level exploration
+        # 2b: /48-level exploration
         generated_2b = []
 
         all_bgp_list = list(self.bgp_db.prefixes.keys())
@@ -1110,7 +1047,7 @@ class HybridGenerator:
 
         generated.extend(generated_2b)
 
-        # Exploration 2c: /64 neighbor exploration
+        # 2c: /64 neighbor exploration
         generated_2c = []
 
         known_prefix64_ints = set()
@@ -1171,7 +1108,11 @@ class HybridGenerator:
 # ============================================================
 
 class PatternMatcher:
-    """Pattern matcher (high-performance version)"""
+    """
+    Pattern matcher with high-performance multi-core filtering.
+    Uses batch merge-sort for add_addresses() and fine-grained
+    chunking in filter_matching() to minimise pickle overhead.
+    """
 
     def __init__(self, config: Config):
         self.config = config
@@ -1180,7 +1121,6 @@ class PatternMatcher:
         self._prefix_steps: Dict[str, int] = {}
 
     def fit(self, seeds: List[str]):
-        """Learn patterns from seeds"""
         prefix_iids = defaultdict(list)
 
         for s in seeds:
@@ -1211,21 +1151,18 @@ class PatternMatcher:
             self._prefix_steps[p64] = step
 
     def filter_matching(self, addrs: List[str]) -> Tuple[List[str], List[str]]:
-        
         if not addrs:
             return [], []
 
         n_workers = self.config.num_workers
         tolerance = self.config.tolerance
 
-        # Opt3: threshold lowered from 10000 to 1000
-        if len(addrs) < 1000 or n_workers <= 1:
+        if len(addrs) < 10000 or n_workers <= 1:
             return self._filter_single_thread(addrs)
 
-        # Opt4: n_workers*16 chunks for better serialization/scheduling balance;
-        # max(50000,...) floor avoids excessive scheduling overhead from too many chunks
         num_chunks = n_workers * 16
-        chunk_size = max(50000, len(addrs) // num_chunks)
+        chunk_size = max(500, len(addrs) // num_chunks)
+
         chunks = []
         for i in range(0, len(addrs), chunk_size):
             chunks.append(addrs[i:i + chunk_size])
@@ -1239,14 +1176,14 @@ class PatternMatcher:
         all_unmatched = []
 
         with Pool(n_workers) as pool:
-            for matched, unmatched in pool.imap_unordered(_filter_chunk_fast, args_list):
+            for matched, unmatched in pool.imap_unordered(_filter_chunk_fast, args_list,
+                                                          chunksize=1):
                 all_matched.extend(matched)
                 all_unmatched.extend(unmatched)
 
         return all_matched, all_unmatched
 
     def _filter_single_thread(self, addrs: List[str]) -> Tuple[List[str], List[str]]:
-        """Single-threaded processing (small datasets)"""
         matched = []
         unmatched = []
         tolerance = self.config.tolerance
@@ -1306,82 +1243,74 @@ class PatternMatcher:
         return matched, unmatched
 
     def add_addresses(self, addrs: List[str]):
-        
-        # 1. Group new IIDs by prefix (only for known prefixes)
+        """
+        Add newly discovered addresses into the pattern database.
+        Uses batch merge-sort (O(n log n)) instead of repeated bisect.insort (O(n²)).
+        """
         prefix_new_iids: Dict[str, List[int]] = defaultdict(list)
 
         for addr in addrs:
             cont = addr if len(addr) == 32 and ':' not in addr else ipv6_to_cont(addr)
             p64 = cont[:16]
+            iid = int(cont[16:], 16)
+
             if p64 in self.prefix_data:
-                iid = int(cont[16:], 16)
                 prefix_new_iids[p64].append(iid)
 
-        if not prefix_new_iids:
-            return
-
-        # 2. Bulk merge per prefix (avoids O(n^2) shifting from repeated bisect.insort)
-        for p64, new_iids in prefix_new_iids.items():
-            old_iids = self._prefix_iids_arrays[p64]  # already sorted
+        for p64, new_iids_raw in prefix_new_iids.items():
+            data = self.prefix_data[p64]
+            old_iids = data['iids']
             old_set = set(old_iids)
 
-            # Keep only genuinely new IIDs
-            truly_new = sorted({iid for iid in new_iids if iid not in old_set})
+            new_unique = sorted(set(new_iids_raw) - old_set)
 
-            if not truly_new:
+            if not new_unique:
                 continue
 
-            # Linear merge of two sorted lists, O(|old| + |new|)
             merged = []
             i, j = 0, 0
-            while i < len(old_iids) and j < len(truly_new):
-                if old_iids[i] <= truly_new[j]:
+            while i < len(old_iids) and j < len(new_unique):
+                if old_iids[i] <= new_unique[j]:
                     merged.append(old_iids[i])
                     i += 1
                 else:
-                    merged.append(truly_new[j])
+                    merged.append(new_unique[j])
                     j += 1
             if i < len(old_iids):
                 merged.extend(old_iids[i:])
-            if j < len(truly_new):
-                merged.extend(truly_new[j:])
+            if j < len(new_unique):
+                merged.extend(new_unique[j:])
 
-            # Update internal state
+            data['iids'] = merged
             self._prefix_iids_arrays[p64] = merged
-            self.prefix_data[p64]['iids'] = merged
 
-            # Recompute step as median of differences
             if len(merged) >= 2:
                 diffs = [merged[k+1] - merged[k] for k in range(len(merged)-1)]
-                new_step = max(1, sorted(diffs)[len(diffs)//2])
-                self.prefix_data[p64]['step'] = new_step
+                new_step = sorted(diffs)[len(diffs)//2]
+                data['step'] = new_step
                 self._prefix_steps[p64] = new_step
 
 
 def _filter_chunk_fast(args: Tuple) -> Tuple[List[str], List[str]]:
-    
+    """
+    Multiprocessing worker for pattern filtering.
+    Addresses already in 32-char hex format are processed via direct
+    string slicing; colon-separated IPv6 strings use the standard library.
+    """
     addrs, prefix_iids_arrays, prefix_steps, tolerance = args
 
     matched = []
     unmatched = []
 
     for addr in addrs:
-        # Opt6: already 32-char continuous hex, skip parsing entirely
         if len(addr) == 32 and ':' not in addr:
             cont = addr
         else:
-            addr_s = addr.strip()
-            # Opt1: fast path for standard exploded format (e.g. 2001:0db8:...)
-            # Fixed length 39 with exactly 7 colons; strip colons directly
-            if len(addr_s) == 39 and addr_s.count(':') == 7:
-                cont = addr_s.replace(':', '')
-            else:
-                # Bug3 fallback: compressed formats (::1, fe80::, 2001:db8::1, etc.)
-                try:
-                    cont = format(int(ipaddress.IPv6Address(addr_s)), '032x')
-                except:
-                    unmatched.append(addr)
-                    continue
+            try:
+                cont = format(int(ipaddress.IPv6Address(addr.strip())), '032x')
+            except:
+                unmatched.append(addr)
+                continue
 
         p64 = cont[:16]
 
@@ -1432,8 +1361,6 @@ def _filter_chunk_fast(args: Tuple) -> Tuple[List[str], List[str]]:
 # ============================================================
 
 class MasscanScanner:
-    """Masscan scanner"""
-
     def __init__(self, config: Config):
         self.config = config
 
@@ -1558,8 +1485,6 @@ class MasscanScanner:
 # ============================================================
 
 class CEXController:
-    """CEX automation controller"""
-
     def __init__(self, config: Config):
         self.config = config
         self.state = StateManager(config)
@@ -1569,7 +1494,6 @@ class CEXController:
         self.scanner = MasscanScanner(config)
 
     def initialize(self, seeds_file: str) -> Set[str]:
-        """Initialize"""
         print("\n[Initialization]")
 
         addrs = read_addrs(seeds_file)
@@ -1593,8 +1517,7 @@ class CEXController:
 
         return seeds_cont
 
-    def run_round(self, round_num: int, num_candidates: int, do_scan: bool = True) -> Dict:
-        """Run a single round (with detailed timing)"""
+    def run_round(self, round_num: int, num_candidates: int) -> Dict:
         print(f"\n{'='*70}")
         print(f"Round {round_num} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Memory: {resource_stats.get_current_memory_mb():.1f} MB")
@@ -1661,7 +1584,7 @@ class CEXController:
             stats['time_total'] = time.time() - round_start
             return stats
 
-        # 4. Alias filter on candidates
+        # 4. Alias filter candidates
         print("\n[4/6] Alias filtering candidates")
         t4 = time.time()
         cand_file = os.path.join(self.config.output_dir, f"candidates_r{round_num}.txt")
@@ -1694,57 +1617,57 @@ class CEXController:
         print(f"  Alias filter time: {stats['time_alias_filter']:.2f}s")
 
         # 5. Scan
-        if do_scan:
-            print("\n[5/6] Scanning")
-            t5 = time.time()
-            hits, scan_stats = self.scanner.scan(cand_file)
+        print("\n[5/6] Scanning")
+        t5 = time.time()
+        hits, scan_stats = self.scanner.scan(cand_file)
 
-            stats['hits'] = len(hits)
-            stats['hit_rate'] = scan_stats['hit_rate']
+        stats['hits'] = len(hits)
+        stats['hit_rate'] = scan_stats['hit_rate']
 
-            if self.alias_filter.enabled and hits:
-                print("  Alias filtering hits...")
-                filtered_hits, alias_stats = self.alias_filter.filter_addresses(hits, verbose=True)
-                hits = set(filtered_hits)
-                stats['hits_after_alias'] = len(hits)
-            else:
-                stats['hits_after_alias'] = len(hits)
-
-            stats['time_scan'] = time.time() - t5
-            print(f"  Scan time: {stats['time_scan']:.2f}s")
-
-            hits_file = os.path.join(self.config.output_dir, f"hits_r{round_num}.txt")
-            with open(hits_file, 'w') as f:
-                for ip in sorted(hits):
-                    f.write(ip + '\n')
-
-            hits_cont = {ipv6_to_cont(ip) for ip in hits}
-
-            # 6. Incremental training
-            print("\n[6/6] Incremental training")
-            t6 = time.time()
-            new_hits = list(hits_cont - seeds)
-
-            if new_hits:
-                print(f"  New hits: {len(new_hits):,}")
-                matched, unmatched = self.matcher.filter_matching(new_hits)
-
-                stats['matched'] = len(matched)
-                print(f"    Pattern matched: {len(matched):,}")
-                print(f"    Unmatched: {len(unmatched):,}")
-
-                if matched:
-                    for addr in matched:
-                        seeds.add(addr)
-                    self.matcher.add_addresses(matched)
-
-            stats['time_pattern_match'] = time.time() - t6
-            print(f"  Pattern match time: {stats['time_pattern_match']:.2f}s")
-
-            all_active.update(hits_cont)
+        if self.alias_filter.enabled and hits:
+            print("  Alias filtering hits...")
+            filtered_hits, alias_stats = self.alias_filter.filter_addresses(hits, verbose=True)
+            hits = set(filtered_hits)
+            stats['hits_after_alias'] = len(hits)
         else:
-            print("\n[5/6] Scan skipped")
-            print("\n[6/6] Incremental training skipped")
+            stats['hits_after_alias'] = len(hits)
+
+        stats['time_scan'] = time.time() - t5
+        print(f"  Scan time: {stats['time_scan']:.2f}s")
+
+        hits_file = os.path.join(self.config.output_dir, f"hits_r{round_num}.txt")
+        with open(hits_file, 'w') as f:
+            for ip in sorted(hits):
+                f.write(ip + '\n')
+
+        hits_cont = {ipv6_to_cont(ip) for ip in hits}
+
+        # 6. Incremental training
+        print("\n[6/6] Incremental training")
+        t6 = time.time()
+        new_hits = list(hits_cont - seeds)
+
+        if new_hits:
+            print(f"  New hits: {len(new_hits):,}")
+            t_filter = time.time()
+            matched, unmatched = self.matcher.filter_matching(new_hits)
+            print(f"    Pattern filter: {time.time()-t_filter:.2f}s")
+
+            stats['matched'] = len(matched)
+            print(f"    Pattern matched: {len(matched):,}")
+            print(f"    Unmatched: {len(unmatched):,}")
+
+            if matched:
+                t_add = time.time()
+                for addr in matched:
+                    seeds.add(addr)
+                self.matcher.add_addresses(matched)
+                print(f"    add_addresses: {time.time()-t_add:.2f}s")
+
+        stats['time_pattern_match'] = time.time() - t6
+        print(f"  Pattern match time: {stats['time_pattern_match']:.2f}s")
+
+        all_active.update(hits_cont)
 
         # Save state
         t7 = time.time()
@@ -1758,12 +1681,10 @@ class CEXController:
 
         resource_stats.update_memory()
 
-        # Summary
         print(f"\n[Round {round_num} complete]")
         print(f"  Candidates: {stats['candidates']:,} -> {stats['candidates_after_alias']:,} (after alias filter)")
-        if do_scan:
-            print(f"  Hits: {stats['hits']:,} -> {stats['hits_after_alias']:,} ({stats['hit_rate']:.2f}%)")
-            print(f"  Pattern matched: {stats['matched']:,}")
+        print(f"  Hits: {stats['hits']:,} -> {stats['hits_after_alias']:,} ({stats['hit_rate']:.2f}%)")
+        print(f"  Pattern matched: {stats['matched']:,}")
         print(f"  Seeds: {stats['seeds_before']:,} -> {stats['seeds_after']:,}")
         print(f"  Round time: {stats['time_total']:.1f}s")
         print(f"    Generate: {stats['time_generate']:.1f}s | Scan: {stats['time_scan']:.1f}s | "
@@ -1781,12 +1702,11 @@ class CEXController:
         return stats
 
     def run(self, seeds_file: str, num_rounds: int, num_candidates: int,
-            do_scan: bool = True, auto_reset: bool = True):
-        """Run multiple rounds"""
+            auto_reset: bool = True):
         total_start_time = time.time()
 
         print("=" * 70)
-        print("CEX Auto  - Extrapolation Quota (5% extrap / 95% interp)")
+        print("Deepscan6 - IPv6 Active Address Scanner")
         print("=" * 70)
         print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Seeds: {seeds_file}")
@@ -1805,11 +1725,10 @@ class CEXController:
 
         print(f"Alias filter: {'enabled' if self.config.enable_alias_filter else 'disabled'}")
 
-        if do_scan:
-            ok, msg = self.scanner.check_available()
-            if not ok:
-                print(f"\nError: {msg}")
-                sys.exit(1)
+        ok, msg = self.scanner.check_available()
+        if not ok:
+            print(f"\nError: {msg}")
+            sys.exit(1)
 
         if auto_reset and not self.state.is_first_run():
             print("\n[!] Existing state detected, overwriting...")
@@ -1835,7 +1754,7 @@ class CEXController:
 
         try:
             for r in range(1, num_rounds + 1):
-                round_stats = self.run_round(r, num_candidates, do_scan)
+                round_stats = self.run_round(r, num_candidates)
 
                 all_stats['rounds'].append(round_stats)
                 all_stats['total_scanned'] = sum(rs['candidates_after_alias'] for rs in all_stats['rounds'])
@@ -1859,7 +1778,6 @@ class CEXController:
         self._print_report(all_stats)
 
     def _print_report(self, stats: Dict):
-        """Print final report"""
         print("\n" + "=" * 70)
         print("Final Report")
         print("=" * 70)
@@ -1932,37 +1850,43 @@ class CEXController:
 
 
 # ============================================================
-# Main Function
+# Entry Point
 # ============================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CEX Auto  - Extrapolation Quota (5% extrap / 95% interp)",
+        description="Deepscan6 - IPv6 Active Address Scanner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+
+  # Pure CEX mode
+  python main.py --seeds seeds.txt --rounds 10 --num 1000000
+
+  # CEX + 30% BGP exploration hybrid
+  python main.py --seeds seeds.txt --rounds 10 --num 1000000 \\
+         --explore-ratio 0.30 --bgp-file bgp_data.json
+        """
     )
 
-    parser.add_argument("--seeds", required=True, help="Initial seed file")
-    parser.add_argument("--rounds", type=int, default=10, help="Number of iterations (default 10)")
-    parser.add_argument("--num", type=int, default=1000000, help="Candidates per round (default 1000000)")
+    parser.add_argument("--seeds", required=True, help="Seed address file (one IPv6 per line)")
+    parser.add_argument("--rounds", type=int, default=10, help="Number of scan rounds (default: 10)")
+    parser.add_argument("--num", type=int, default=1000000, help="Candidates per round (default: 1000000)")
 
     parser.add_argument("--explore-ratio", type=float, default=0.0,
-                        help="Exploration ratio (0-1, default 0 means pure CEX mode)")
-    parser.add_argument("--bgp-file", help="BGP data file (JSON format, required for exploration layer)")
+                        help="Fraction of candidates from BGP exploration (0-1, default: 0)")
+    parser.add_argument("--bgp-file", help="BGP prefix JSON file (required when --explore-ratio > 0)")
 
-    parser.add_argument("--alias-file", default="./aliased-prefixes.txt", help="Alias prefix file")
-    parser.add_argument("--no-alias-filter", action="store_true", help="Disable alias filter")
+    parser.add_argument("--alias-file", default="./aliased-prefixes.txt", help="Aliased prefix list file")
+    parser.add_argument("--no-alias-filter", action="store_true", help="Disable alias prefix filtering")
 
-    parser.add_argument("--max-steps", type=int, default=30, help="Maximum extrapolation steps (default 30)")
-    parser.add_argument("--tolerance", type=float, default=0.5, help="Pattern matching tolerance (default 0.5)")
+    parser.add_argument("--max-steps", type=int, default=30, help="Max extrapolation steps (default: 30)")
+    parser.add_argument("--tolerance", type=float, default=0.5, help="Pattern matching tolerance (default: 0.5)")
 
-    parser.add_argument("--workers", type=int, default=0, help="Parallel workers (default CPU-1)")
-    parser.add_argument("--state-dir", default="./cex_state", help="State directory")
+    parser.add_argument("--workers", type=int, default=0, help="Parallel workers (default: CPU count - 1)")
+    parser.add_argument("--state-dir", default="./cex_state", help="State persistence directory")
     parser.add_argument("--output-dir", default="./cex_output", help="Output directory")
-    parser.add_argument("--reset", action="store_true", help="Reset state and start from scratch")
-
-    parser.add_argument("--interface", default="", help="Network interface for masscan")
-    parser.add_argument("--source-ip", default="", help="Source IPv6 address for masscan")
-    parser.add_argument("--router-mac", default="", help="Router MAC address for masscan")
+    parser.add_argument("--reset", action="store_true", help="Clear existing state and restart")
 
     args = parser.parse_args()
 
@@ -1971,7 +1895,7 @@ def main():
         sys.exit(1)
 
     if args.explore_ratio > 0 and not args.bgp_file:
-        print("Error: --bgp-file is required when exploration layer is enabled")
+        print("Error: --bgp-file is required when --explore-ratio > 0")
         sys.exit(1)
 
     config = Config()
@@ -1980,16 +1904,10 @@ def main():
     config.num_workers = args.workers if args.workers > 0 else max(1, cpu_count() - 1)
     config.max_steps = args.max_steps
     config.tolerance = args.tolerance
-
     config.alias_file = args.alias_file
     config.enable_alias_filter = not args.no_alias_filter
-
     config.explore_ratio = args.explore_ratio
     config.bgp_file = args.bgp_file
-
-    config.interface = args.interface
-    config.source_ip = args.source_ip
-    config.router_mac = args.router_mac
 
     config.setup_dirs()
 
@@ -2003,7 +1921,6 @@ def main():
         seeds_file=args.seeds,
         num_rounds=args.rounds,
         num_candidates=args.num,
-        do_scan=not args.no_scan
     )
 
 
