@@ -37,6 +37,9 @@ python main.py --seeds seeds.txt --rounds 10 --num 1000000 \
 | `--state-dir`       | `./cex_state`            | State persistence directory                     |
 | `--output-dir`      | `./cex_output`           | Candidate/hit output directory                  |
 | `--reset`           | —                        | Clear state and restart from scratch            |
+| `--interface`       | —                        | Network interface for masscan                   |
+| `--source-ip`       | —                        | Source IPv6 address for masscan                 |
+| `--router-mac`      | —                        | Router MAC address for masscan                  |
 
 ## Candidate Generation
 
@@ -60,5 +63,7 @@ cex_output/
   candidates_r{N}.txt  # Candidates for round N
   hits_r{N}.txt        # Confirmed active addresses for round N
 ```
+
+## 
 
 ## 
