@@ -67,6 +67,43 @@ python main.py --seeds seeds.txt --rounds 10 --num 1000000 \
 | `--output-dir` | `./cex_output` | Directory for output files |
 | `--reset` | — | Clear existing state and restart from scratch |
 
+
+### Alias prefix filtering
+ 
+By default the tool looks for `./aliased-prefixes.txt` in the current working directory. If the file is absent, alias filtering is silently skipped and all candidates are passed to masscan as-is.
+ 
+Place the file next to `main.py` and it will be picked up automatically:
+ 
+```bash
+python main.py --seeds seeds.txt --rounds 10 --num 1000000
+```
+ 
+Specify a file at a different path with `--alias-file`:
+ 
+```bash
+python main.py --seeds seeds.txt --rounds 10 --num 1000000 \
+               --alias-file /data/aliased-prefixes.txt
+```
+ 
+Disable alias filtering entirely with `--no-alias-filter`:
+ 
+```bash
+python main.py --seeds seeds.txt --rounds 10 --num 1000000 \
+               --no-alias-filter
+```
+ 
+The alias prefix file must contain one prefix per line in CIDR notation. Lines beginning with `#` are treated as comments. Entries without a prefix length default to `/64`.
+ 
+```
+# example aliased-prefixes.txt
+2001:db8::/32
+2001:db8:1::/48
+2001:db8:2:3::/64
+2001:db8:4::            # no prefix length — treated as /64
+```
+
+
+
 ## Output
 
 Each round writes two files to `--output-dir`:
